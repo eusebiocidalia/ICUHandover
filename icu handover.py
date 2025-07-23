@@ -1,85 +1,79 @@
 import streamlit as st
 import openai
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# Streamlit secret (via Streamlit Cloud > Settings > Secrets)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ---- System Prompt Template ----
-system_prompt = """
-You are a clinical assistant helping nurses summarise patient handovers for ICU or HDU settings.
+st.set_page_config(page_title="🩺 ICU/HDU Chat Handover Assistant", layout="wide")
+st.title("🩺 ICU/HDU Chat-Based Handover Assistant")
 
-Structure the handover as follows:
-1. Patient Details
-   - Name / ID / DOB
-   - Location (e.g. ICU Bed)
-   - Allergies
-   - Diagnosis
+st.markdown("Chat like you're giving a handover. The assistant will help structure and complete it for you.")
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "system", "content": """You are a clinical handover assistant helping ICU and HDU nurses.
+
+Your job is to:
+1. Listen to free-form chat and extract a structured handover.
+2. Use this format:
+   - Patient Details: Name, ID, Bed, DOB
    - Reason for Admission
-   - Background / History
-
-2. Current Issues
-
-3. ABCDE Assessment
-   - A – Airway
-   - B – Breathing
-   - C – Circulation
-   - D – Disability
-   - E – Exposure
-
-4. Other Systems
+   - Current Issues
+   - ABCDE (Airway, Breathing, Circulation, Disability, Exposure)
    - Renal
    - Neurology
-   - Infections (site, MRSA/urine/sputum/swab results)
-   - Antibiotics (name, dose, duration)
+   - Allergies
+   - Infections (including MRSA/urine/sputum/swabs)
+   - Antibiotics
+   - Family Notes
+   - Plan
+   - Escalation Status
+3. If any important sections are missing, ask the nurse whether they'd like to add them.
+4. Keep the conversation helpful and brief, like a supportive clinical assistant.
+"""}]
 
-5. Observations & Trends (e.g., GCS, NEWS2, vitals)
+# Display previous messages
+for msg in st.session_state.messages[1:]:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-6. Plan of Care
+# Input box
+if prompt := st.chat_input("Give your handover or respond to assistant..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-7. Escalation Status (e.g., DNACPR)
+    # Call OpenAI
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=st.session_state.messages,
+                temperature=0.4
+            )
+            reply = response.choices[0].message.content
+            st.markdown(reply)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
 
-8. Family / Communication Notes
+# Generate Final Output
+if st.button("📋 Generate Structured Handover"):
+    with st.spinner("Assembling final handover..."):
+        full_context = st.session_state.messages + [
+            {
+                "role": "user",
+                "content": "Please now provide the final structured ICU/HDU handover from all this conversation, using headers."
+            }
+        ]
+        final = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=full_context,
+            temperature=0.3
+        )
+        handover = final.choices[0].message.content
+        st.success("Here is your structured handover:")
+        st.markdown("---")
+        st.markdown(handover)
+        st.download_button("📥 Download Handover", handover, file_name="handover.txt")
 
-Format clearly with section headers and bullet points when needed. Use clinical shorthand appropriately.
-"""
-
-# ---- Streamlit App ----
-st.set_page_config(page_title="Nurse Handover Assistant", layout="wide")
-st.title("🩺 ICU/HDU Nurse Handover Assistant")
-
-st.markdown("""
-Type in your free-text patient summary below (e.g., what you'd say during handover),
-and this app will structure it into a professional format.
-""")
-
-# Dropdown for ward type
-ward_type = st.selectbox("Ward Type", ["ICU", "HDU"])
-
-# Free-text input
-user_input = st.text_area("🗣️ Nurse Notes", height=300, placeholder="E.g., John Smith, ICU bed 3. Sepsis from pneumonia. On norad. Propofol sedation. GCS 10. MRSA neg. No family update today...")
-
-if st.button("Generate Structured Handover"):
-    if not user_input.strip():
-        st.warning("Please enter some handover notes first.")
-    else:
-        with st.spinner("Generating handover..."):
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
-            ]
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=1000
-                )
-                handover_output = response['choices'][0]['message']['content']
-                st.success("Structured handover generated:")
-                st.markdown("----")
-                st.markdown(handover_output)
-                st.download_button("📥 Download as Text", handover_output, file_name="handover.txt")
-            except Exception as e:
-                st.error(f"Error generating handover: {str(e)}")
