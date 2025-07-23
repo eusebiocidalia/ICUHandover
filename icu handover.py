@@ -1,51 +1,55 @@
 import streamlit as st
 import openai
 import os
+import base64
+import smtplib
+from email.message import EmailMessage
+from email_validator import validate_email, EmailNotValidError
 
-# Streamlit secret (via Streamlit Cloud > Settings > Secrets)
-openai.api_key = os.getenv("OPENAI_API_KEY")
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-st.set_page_config(page_title="🩺 ICU/HDU Chat Handover Assistant", layout="wide")
+st.set_page_config(page_title="🩺 ICU/HDU Handover Assistant", layout="wide")
 st.title("🩺 ICU/HDU Chat-Based Handover Assistant")
 
-st.markdown("Chat like you're giving a handover. The assistant will help structure and complete it for you.")
-
-# Initialize session state
+# Session state setup
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "system", "content": """You are a clinical handover assistant helping ICU and HDU nurses.
+        {"role": "system", "content": """You are a clinical assistant helping nurses organise patient handovers.
 
-Your job is to:
-1. Listen to free-form chat and extract a structured handover.
-2. Use this format:
-   - Patient Details: Name, ID, Bed, DOB
-   - Reason for Admission
-   - Current Issues
-   - ABCDE (Airway, Breathing, Circulation, Disability, Exposure)
-   - Renal
-   - Neurology
-   - Allergies
-   - Infections (including MRSA/urine/sputum/swabs)
-   - Antibiotics
-   - Family Notes
-   - Plan
-   - Escalation Status
-3. If any important sections are missing, ask the nurse whether they'd like to add them.
-4. Keep the conversation helpful and brief, like a supportive clinical assistant.
-"""}]
+Structure information clearly in this format:
+1. Patient Details
+2. Reason for Admission
+3. Current Issues
+4. ABCDE (Airway, Breathing, Circulation, Disability, Exposure)
+5. Renal, Neurology, Allergies, Infections, Antibiotics
+6. Plan, Escalation, Family
 
-# Display previous messages
+After chat, check what’s missing and ask follow-up questions if needed.
+"""}
+    ]
+
+# Display chat
 for msg in st.session_state.messages[1:]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input box
-if prompt := st.chat_input("Give your handover or respond to assistant..."):
+# Voice recorder
+st.markdown("🎙️ Or record voice:")
+audio_file = st.file_uploader("Upload voice file (MP3 or WAV)", type=["mp3", "wav"])
+if audio_file:
+    st.audio(audio_file)
+    with st.spinner("Transcribing..."):
+        transcript = openai.Audio.transcribe("whisper-1", audio_file)
+        voice_input = transcript["text"]
+        st.success("Transcribed:")
+        st.markdown(f"> {voice_input}")
+        st.session_state.messages.append({"role": "user", "content": voice_input})
+
+# Text input
+if prompt := st.chat_input("Type your handover message..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
-
-    # Call OpenAI
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             response = openai.ChatCompletion.create(
@@ -57,23 +61,51 @@ if prompt := st.chat_input("Give your handover or respond to assistant..."):
             st.markdown(reply)
             st.session_state.messages.append({"role": "assistant", "content": reply})
 
-# Generate Final Output
+# Generate final handover
 if st.button("📋 Generate Structured Handover"):
-    with st.spinner("Assembling final handover..."):
-        full_context = st.session_state.messages + [
-            {
-                "role": "user",
-                "content": "Please now provide the final structured ICU/HDU handover from all this conversation, using headers."
-            }
+    with st.spinner("Compiling..."):
+        context = st.session_state.messages + [
+            {"role": "user", "content": "Please now provide the full structured ICU/HDU handover."}
         ]
         final = openai.ChatCompletion.create(
             model="gpt-4",
-            messages=full_context,
+            messages=context,
             temperature=0.3
         )
         handover = final.choices[0].message.content
-        st.success("Here is your structured handover:")
+        st.session_state.final_handover = handover
+
+        st.success("✅ Final handover ready:")
         st.markdown("---")
-        st.markdown(handover)
-        st.download_button("📥 Download Handover", handover, file_name="handover.txt")
+        st.code(handover, language="markdown")
+
+        st.download_button("📥 Download .txt", handover, file_name="handover.txt")
+
+        st.markdown("📋 **Copy to clipboard**:")
+        st.code(handover)
+
+# Email function
+def send_email(receiver_email, subject, body):
+    msg = EmailMessage()
+    msg["From"] = st.secrets["EMAIL_SENDER"]
+    msg["To"] = receiver_email
+    msg["Subject"] = subject
+    msg.set_content(body)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_PASSWORD"])
+        smtp.send_message(msg)
+
+# Email option
+if "final_handover" in st.session_state:
+    st.markdown("📧 **Send by email**")
+    email_input = st.text_input("Recipient email")
+    if st.button("Send Email"):
+        try:
+            validate_email(email_input)
+            send_email(email_input, "ICU/HDU Handover", st.session_state.final_handover)
+            st.success("Email sent!")
+        except EmailNotValidError as e:
+            st.error(f"Invalid email: {e}")
+        except Exception as e:
+            st.error(f"Failed to send: {e}")
 
